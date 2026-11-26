@@ -1,0 +1,7 @@
+<resources>
+    <style name="KomicTheme" parent="android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FBF6EC</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:fontFamily">serif</item>
+    </style>
+</resources>

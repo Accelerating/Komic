@@ -1,0 +1,24 @@
+.DS_Store
+
+# Gradle, IDE, and Android build output
+.gradle/
+.kotlin/
+.idea/
+*.iml
+build/
+*.apk
+*.aab
+
+# Machine-local configuration and signing credentials
+local.properties
+.env
+.env.*
+.release-signing/
+signing.properties
+keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.key
+*.pem
