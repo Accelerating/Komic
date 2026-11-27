@@ -60,7 +60,7 @@ fun Choices(values: List<String>, selected: String, active: Color, foreground: C
 }
 
 @Composable
-internal fun Settings(prefs: SharedPreferences, theme: String, onTheme: (String) -> Unit, language: String, onLanguage: (String) -> Unit, openComic: (Server, DavItem) -> Unit, importComics: (Server, List<DavItem>) -> Unit, importing: Boolean) {
+internal fun Settings(prefs: SharedPreferences, theme: String, onTheme: (String) -> Unit, language: String, onLanguage: (String) -> Unit, openComic: (Server, DavItem) -> Unit, importComics: (Server, List<DavItem>) -> Unit, importing: Boolean, checkUpdates: () -> Unit) {
     var entries by remember { mutableStateOf(servers(prefs)) }
     var edit by rememberSaveable { mutableStateOf<String?>(null) }
     var browsing by rememberSaveable { mutableStateOf<String?>(null) }
@@ -121,6 +121,7 @@ internal fun Settings(prefs: SharedPreferences, theme: String, onTheme: (String)
                 }
             }
         }
+        TextButton(onClick = checkUpdates) { Text(context.getString(R.string.check_updates)) }
     }
     edit?.let { id ->
         val original = entries.find { it.id == id }

@@ -59,7 +59,7 @@ jobs:
           printf '%s' "$SIGNING_PROPERTIES_BASE64" | base64 --decode > .release-signing/signing.properties
 
       - name: Build release APK
-        run: ./gradlew --no-daemon :app:assembleRelease
+        run: ./gradlew --no-daemon "-PreleaseTag=$RELEASE_TAG" :app:assembleRelease
 
       - name: Remove release signing files
         if: always()
@@ -70,9 +70,9 @@ jobs:
           apk=app/build/outputs/apk/release/app-release.apk
           "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose "$apk"
           mkdir -p "$RUNNER_TEMP/release"
-          cp "$apk" "$RUNNER_TEMP/release/Komic.apk"
+          cp "$apk" "$RUNNER_TEMP/release/Komic-$RELEASE_TAG.apk"
           cd "$RUNNER_TEMP/release"
-          sha256sum Komic.apk > SHA256SUMS.txt
+          sha256sum "Komic-$RELEASE_TAG.apk" > SHA256SUMS.txt
 
       - name: Publish GitHub Release
         working-directory: ${{ runner.temp }}/release
@@ -81,8 +81,8 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           if gh release view -- "$RELEASE_TAG" > /dev/null 2>&1; then
-            gh release upload --clobber -- "$RELEASE_TAG" Komic.apk SHA256SUMS.txt
+            gh release upload --clobber -- "$RELEASE_TAG" "Komic-$RELEASE_TAG.apk" SHA256SUMS.txt
           else
             gh release create --verify-tag --title "$RELEASE_TAG" --generate-notes -- \
-              "$RELEASE_TAG" Komic.apk SHA256SUMS.txt
+              "$RELEASE_TAG" "Komic-$RELEASE_TAG.apk" SHA256SUMS.txt
           fi

@@ -111,6 +111,8 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: String, onTheme: (String) -> Unit) {
+    var updateRequest by remember { mutableIntStateOf(0) }
+    UpdatePrompt(activity, updateRequest)
     val prefs = remember { activity.getSharedPreferences("appearance", Context.MODE_PRIVATE) }
     val tabs = listOf(R.string.shelf, R.string.recent, R.string.settings).map(activity::getString)
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -289,7 +291,7 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
             Box(Modifier.weight(1f)) {
                 if (settingsState != null) settingsState.SaveableStateProvider("settings") {
                     Settings(prefs, menuTheme, onTheme, activity.currentLanguage(), activity::changeLanguage,
-                        openComic = { server, item ->
+                        checkUpdates = { updateRequest++ }, openComic = { server, item ->
                             remoteTitle = item.name
                             val source = if (item.nativeArchive) "dav-archive" else "dav"
                             opening = "$source:${server.id}|${item.url}"

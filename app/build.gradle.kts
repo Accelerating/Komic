@@ -13,8 +13,12 @@ android {
         applicationId = "com.komic.reader"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "0.1.1"
+        val version = providers.gradleProperty("releaseTag").orNull?.removePrefix("v") ?: "0.1.1"
+        require(version.matches(Regex("""(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"""))) { "Expected MAJOR.MINOR.PATCH, optionally prefixed with v" }
+        val (major, minor, patch) = version.split('.').map(String::toInt)
+        require(major in 0..2099 && minor in 0..999 && patch in 0..999)
+        versionCode = if (version == "0.1.1") 2 else 1 + major * 1000000 + minor * 1000 + patch
+        versionName = version
     }
     val signingFile = rootProject.file(".release-signing/signing.properties")
     if (signingFile.isFile) {
