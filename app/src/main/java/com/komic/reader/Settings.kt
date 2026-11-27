@@ -60,12 +60,12 @@ fun Choices(values: List<String>, selected: String, active: Color, foreground: C
 }
 
 @Composable
-internal fun Settings(prefs: SharedPreferences, theme: String, onTheme: (String) -> Unit, language: String, onLanguage: (String) -> Unit, openComic: (Server, DavItem) -> Unit) {
+internal fun Settings(prefs: SharedPreferences, theme: String, onTheme: (String) -> Unit, language: String, onLanguage: (String) -> Unit, openComic: (Server, DavItem) -> Unit, importComics: (Server, List<DavItem>) -> Unit, importing: Boolean) {
     var entries by remember { mutableStateOf(servers(prefs)) }
     var edit by rememberSaveable { mutableStateOf<String?>(null) }
     var browsing by rememberSaveable { mutableStateOf<String?>(null) }
     entries.find { it.id == browsing }?.let { server ->
-        RemoteDirectory(server, openComic) { browsing = null }
+        RemoteDirectory(server, openComic, importComics, importing) { browsing = null }
         return
     }
     val context = androidx.compose.ui.platform.LocalContext.current

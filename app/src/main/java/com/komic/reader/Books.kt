@@ -281,8 +281,17 @@ private fun zipPages(archive: ZipFile): List<String> {
 }
 internal fun remoteBook(context: android.content.Context, id: String, name: String, indexProgress: (Int) -> Unit, progress: (Long, Long) -> Unit): LibraryDb.Book {
     val source = remoteArchive(context, id)
-    val pages = if (id.startsWith("dav-archive:")) source.indexNative(context, progress)
-        else source.read(true, progress, indexProgress, ::zipPages)
-    if (pages.isEmpty()) throw LibraryError(R.string.no_images)
-    return book(id, name.substringBeforeLast('.', name), pages)
+    fun indexedBook(pages: List<String>, loadCover: (String) -> Bitmap): LibraryDb.Book {
+        if (pages.isEmpty()) throw LibraryError(R.string.no_images)
+        val entry = book(id, name.substringBeforeLast('.', name), pages)
+        val comic = entry.comic()
+        CoverCache.ensure(context, CoverCache.key(comic)) { loadCover(comic.cover) }
+        return entry
+    }
+    return if (id.startsWith("dav-archive:")) {
+        val pages = source.indexNative(context, progress)
+        indexedBook(pages) { page -> source.nativeReader(context).use { it.image(page, 320).bitmap } }
+    } else source.read(true, progress, indexProgress) { zip ->
+        indexedBook(zipPages(zip)) { page -> decodeCover(zip, page) }
+    }
 }

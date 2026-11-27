@@ -90,4 +90,8 @@
     <string name="language_english" translatable="false">English</string>
     <string name="invalid_username">Enter a valid username without a colon.</string>
     <string name="credentials_save_failed">Could not save credentials. Please try again.</string>
+    <string name="select_all">Select all</string>
+    <string name="import_selected">Import selected (%1$d)</string>
+    <string name="import_result">Imported: %1$d · Failed: %2$d</string>
+    <string name="import_progress">Processed %1$d / %2$d</string>
 </resources>

@@ -88,4 +88,8 @@
     <string name="follow_system_language">跟随系统</string>
     <string name="invalid_username">请输入有效的用户名，用户名不能包含冒号。</string>
     <string name="credentials_save_failed">无法保存登录信息，请重试。</string>
+    <string name="select_all">全选</string>
+    <string name="import_selected">导入已选（%1$d）</string>
+    <string name="import_result">导入成功：%1$d · 失败：%2$d</string>
+    <string name="import_progress">已处理 %1$d / %2$d 本</string>
 </resources>

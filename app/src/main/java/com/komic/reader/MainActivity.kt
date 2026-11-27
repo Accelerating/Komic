@@ -1,6 +1,8 @@
 package com.komic.reader
 
 import android.content.Context
+import android.provider.DocumentsContract
+import android.net.Uri
 import android.content.Intent
 import android.app.LocaleManager
 import android.os.Build
@@ -114,7 +116,10 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var active by rememberSaveable { mutableStateOf<String?>(null) }
     var books by remember { mutableStateOf<List<Comic>>(emptyList()) }
-    var importing by remember { mutableStateOf(false) }
+    var importTotal by remember { mutableIntStateOf(0) }
+    var importDone by remember { mutableIntStateOf(0) }
+    var importTitle by remember { mutableStateOf("") }
+    val importing = importTotal > 0
     var importMenu by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val notices = remember { SnackbarHostState() }
@@ -157,29 +162,61 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
             }) { Text(if (deleting) activity.getString(R.string.deleting) else activity.getString(R.string.delete)) }
         }, dismissButton = { TextButton(enabled = !deleting, onClick = { confirming = false }) { Text(activity.getString(R.string.cancel)) } }
     )
-    fun import(uri: android.net.Uri?, folder: Boolean) {
-        if (uri == null) return
+    fun import(uris: List<android.net.Uri>, folder: Boolean) {
+        if (uris.isEmpty()) return
         scope.launch {
-            importing = true
-            val error = withContext(Dispatchers.IO) {
-                try {
-                    activity.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                    val book = loadLocalBook(activity, uri, folder)
-                    ensureLocalCover(activity, book.comic())
-                    shelf.add(book)
-                    null
-                } catch (e: CancellationException) { throw e } catch (e: Exception) {
-                    if (e is LibraryError) e.describe(activity)
-                    else activity.getString(R.string.invalid_archive)
+            val files = uris.distinct()
+            importDone = 0
+            importTitle = ""
+            importTotal = files.size
+            val errors = withContext(Dispatchers.IO) {
+                files.mapNotNull { uri ->
+                    val name = runCatching {
+                        activity.contentResolver.query(uri, arrayOf(android.provider.OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
+                            if (it.moveToFirst()) it.getString(0) else null
+                        }
+                    }.getOrNull()
+                    importTitle = name.orEmpty()
+                    try {
+                        activity.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                        val book = loadLocalBook(activity, uri, folder)
+                        ensureLocalCover(activity, book.comic())
+                        shelf.add(book)
+                        val directory = when {
+                            folder -> DocumentsContract.buildDocumentUri(uri.authority,
+                                DocumentsContract.getTreeDocumentId(uri))
+                            uri.authority == "com.android.externalstorage.documents" -> {
+                                val id = DocumentsContract.getDocumentId(uri)
+                                val parent = id.substringBeforeLast('/', id.substringBefore(':') + ":")
+                                DocumentsContract.buildDocumentUri(uri.authority, parent)
+                            }
+                            else -> uri // The picker can resolve a document to its containing directory.
+                        }
+                        prefs.edit().putString("localImportLocation", directory.toString()).apply()
+                        null
+                    } catch (e: CancellationException) { throw e } catch (e: Exception) {
+                        if (e is LibraryError) e.describe(activity) else activity.getString(R.string.invalid_archive)
+                    } finally { importDone++ }
                 }
             }
-            importing = false
-            if (error == null) tab = 0
-            notices.showSnackbar(error ?: activity.getString(R.string.added))
+            importTotal = 0
+            if (errors.size < uris.distinct().size) tab = 0
+            notices.showSnackbar(if (uris.size == 1) errors.firstOrNull() ?: activity.getString(R.string.added)
+                else activity.getString(R.string.import_result, uris.distinct().size - errors.size, errors.size))
         }
     }
-    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { import(it, true) }
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { import(it, false) }
+    fun localImportLocation(): Uri = prefs.getString("localImportLocation", null)?.let(Uri::parse)
+        ?: DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:")
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> import(listOfNotNull(uri), true) }
+    val archivePicker = remember {
+        object : ActivityResultContracts.OpenMultipleDocuments() {
+            override fun createIntent(context: Context, input: Array<String>): Intent =
+                super.createIntent(context, input).apply {
+                    putExtra(DocumentsContract.EXTRA_INITIAL_URI, localImportLocation())
+                }
+        }
+    }
+    val filePicker = rememberLauncherForActivityResult(archivePicker) { uris -> import(uris, false) }
     var settingsVisit by rememberSaveable { mutableIntStateOf(0) }
     // Keep the directory when closing a comic, but only within this visit to Settings.
     val settingsState = if (tab == 2) key(settingsVisit) {
@@ -243,13 +280,40 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
                 }
             }
             HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = Wine.copy(alpha = .65f))
+            if (importing) Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+                Text(activity.getString(R.string.import_progress, importDone, importTotal) + "  " + importTitle,
+                    maxLines = 1, overflow = TextOverflow.Ellipsis)
+                LinearProgressIndicator(progress = { if (importTotal > 0) importDone.toFloat() / importTotal else 1f },
+                    modifier = Modifier.fillMaxWidth())
+            }
             Box(Modifier.weight(1f)) {
                 if (settingsState != null) settingsState.SaveableStateProvider("settings") {
-                    Settings(prefs, menuTheme, onTheme, activity.currentLanguage(), activity::changeLanguage) { server, item ->
-                        remoteTitle = item.name
-                        val source = if (item.nativeArchive) "dav-archive" else "dav"
-                        opening = "$source:${server.id}|${item.url}"
-                    }
+                    Settings(prefs, menuTheme, onTheme, activity.currentLanguage(), activity::changeLanguage,
+                        openComic = { server, item ->
+                            remoteTitle = item.name
+                            val source = if (item.nativeArchive) "dav-archive" else "dav"
+                            opening = "$source:${server.id}|${item.url}"
+                        }, importComics = { server, items ->
+                            scope.launch {
+                                importDone = 0
+                                importTitle = ""
+                                importTotal = items.size
+                                val failed = withContext(Dispatchers.IO) {
+                                    items.count { item ->
+                                        importTitle = item.name
+                                        try {
+                                            val source = if (item.nativeArchive) "dav-archive" else "dav"
+                                            val id = "$source:${server.id}|${item.url}"
+                                            val book = remoteBook(activity, id, item.name, indexProgress = {}, progress = { _, _ -> })
+                                            shelf.indexRemote(book, org.json.JSONArray(book.pages).length() - 1)
+                                            false
+                                        } catch (e: CancellationException) { throw e } catch (_: Exception) { true } finally { importDone++ }
+                                    }
+                                }
+                                importTotal = 0
+                                notices.showSnackbar(activity.getString(R.string.import_result, items.size - failed, failed))
+                            }
+                        }, importing = importing)
                 }
                 else {
                     val visible = if (tab == 0) books else books.filter { it.opened > 0 }.sortedByDescending { it.opened }
@@ -304,11 +368,10 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
             }
         }
         SnackbarHost(notices, Modifier.align(Alignment.BottomCenter).padding(bottom = 62.dp))
-        if (importing) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().align(Alignment.TopCenter))
     }
     if (importMenu) AlertDialog(onDismissRequest = { importMenu = false }, title = { Text(activity.getString(R.string.add_to_shelf), fontFamily = Editorial) },
         text = { Column {
-            TextButton(onClick = { importMenu = false; folderPicker.launch(null) }) { Text(activity.getString(R.string.choose_folder)) }
+            TextButton(onClick = { importMenu = false; folderPicker.launch(localImportLocation()) }) { Text(activity.getString(R.string.choose_folder)) }
             TextButton(onClick = { importMenu = false; filePicker.launch(arrayOf("*/*")) }) { Text(activity.getString(R.string.open_zip)) }
         } }, confirmButton = { TextButton(onClick = { importMenu = false }) { Text(activity.getString(R.string.cancel)) } })
 }
