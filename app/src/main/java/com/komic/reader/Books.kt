@@ -4,7 +4,6 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import android.content.Context
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.MenuBook
-import android.content.ContentResolver
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.rememberScrollState
@@ -14,7 +13,6 @@ import androidx.compose.ui.graphics.painter.BitmapPainter
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
-import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.compose.foundation.Image
@@ -35,6 +33,12 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.CancellationException
 import org.apache.commons.compress.archivers.zip.ZipFile
 import org.json.JSONArray
+import java.io.File
+import java.nio.file.Files
+import android.os.ParcelFileDescriptor
+import java.io.Closeable
+import java.io.IOException
+import java.security.MessageDigest
 import java.io.InputStream
 
 data class Comic(val id: String, val title: String, val pages: List<String>, val page: Int, val opened: Long, val pageFraction: Float = 0f) {
@@ -58,12 +62,45 @@ internal val pageOrder get() = (android.icu.text.Collator.getInstance() as andro
     numericCollation = true
 }
 
-private fun <T> ContentResolver.withZip(uri: Uri, action: (ZipFile) -> T): T {
-    val fd = requireNotNull(openFileDescriptor(uri, "r"))
-    return ParcelFileDescriptor.AutoCloseInputStream(fd).use { stream ->
-        ZipFile.builder().setSeekableByteChannel(stream.channel).get().use(action)
+private class LocalZip(val zip: ZipFile, private val stream: InputStream? = null) : Closeable {
+    override fun close() {
+        try { zip.close() } finally { stream?.close() }
     }
 }
+
+private fun legacyZipCopy(context: Context, uri: Uri): File {
+    val name = MessageDigest.getInstance("SHA-256").digest(uri.toString().toByteArray())
+        .joinToString("") { "%02x".format(it) }
+    return File(File(context.filesDir, "local-zips"), "$name.zip")
+}
+
+internal fun discardLegacyZip(context: Context, uri: Uri) {
+    Files.deleteIfExists(legacyZipCopy(context, uri).toPath())
+}
+
+private fun openLocalZip(context: Context, uri: Uri, allowLegacy: Boolean = true): LocalZip {
+    val copy = legacyZipCopy(context, uri)
+    try {
+        val fd = context.contentResolver.openFileDescriptor(uri, "r") ?: throw IOException("Unable to open $uri")
+        val stream = ParcelFileDescriptor.AutoCloseInputStream(fd)
+        val zip = try {
+            ZipFile.builder().setSeekableByteChannel(stream.channel).get()
+        } catch (e: Throwable) {
+            stream.close()
+            throw e
+        }
+        copy.delete()
+        return LocalZip(zip, stream)
+    } catch (e: Exception) {
+        if (!allowLegacy || !copy.isFile) throw e
+        return LocalZip(ZipFile.builder().setFile(copy).get())
+    }
+}
+
+internal fun localZipPages(context: Context, uri: Uri, allowLegacy: Boolean = true): List<String> =
+    openLocalZip(context, uri, allowLegacy).use { source ->
+        zipPages(source.zip).also { if (it.isEmpty()) throw LibraryError(R.string.no_images) }
+    }
 
 fun loadLocalBook(context: Context, uri: Uri, folder: Boolean): LibraryDb.Book {
     val resolver = context.contentResolver
@@ -84,7 +121,7 @@ fun loadLocalBook(context: Context, uri: Uri, folder: Boolean): LibraryDb.Book {
         }
         images.sortedWith { a, b -> sort.compare(a.first, b.first) }.map { it.second }
     } else if (usesLibarchive(title)) context.localArchive(uri).use { it.pages() }
-    else resolver.withZip(uri, ::zipPages)
+    else localZipPages(context, uri, allowLegacy = false)
     if (pages.isEmpty()) throw LibraryError(R.string.no_images)
     val prefix = when { folder -> "folder:"; usesLibarchive(title) -> "archive:"; else -> "zip:" }
     return book(prefix + uri, if (folder) title else title.substringBeforeLast('.', title), pages)
@@ -114,8 +151,8 @@ internal fun ensureLocalCover(context: Context, comic: Comic) {
     if (!comic.id.startsWith("zip:") && !comic.id.startsWith("folder:")) return
     val resolver = context.contentResolver
     CoverCache.ensure(context, CoverCache.key(comic)) {
-        if (comic.id.startsWith("zip:")) resolver.withZip(Uri.parse(comic.id.removePrefix("zip:"))) { zip ->
-            decodeCover(zip, comic.cover)
+        if (comic.id.startsWith("zip:")) openLocalZip(context, Uri.parse(comic.id.removePrefix("zip:"))).use { source ->
+            decodeCover(source.zip, comic.cover)
         } else decode(320) { requireNotNull(resolver.openInputStream(Uri.parse(comic.cover))) }.bitmap
     }
 }
@@ -129,6 +166,7 @@ private fun decodeCover(zip: ZipFile, page: String): Bitmap {
  * a swipe to a page whose prefetch is already running. */
 internal class ReaderPages(private val context: android.content.Context, private val comic: Comic) {
     private val lock = kotlinx.coroutines.sync.Mutex()
+    private var local: LocalZip? = null
     private var archive: RemoteZip? = null
     private var native: NativeComic? = null
     private val coverKey = CoverCache.key(comic)
@@ -158,9 +196,8 @@ internal class ReaderPages(private val context: android.content.Context, private
                     cache.put(page, decoded)
                     return@withLock decoded
                 }
-                val source = archive ?: remoteArchive(context, comic.id, reuse = true).also { archive = it }
                 val job = coroutineContext
-                source.read(false) { zip ->
+                val readPage = { zip: ZipFile ->
                     job.ensureActive()
                     val entry = requireNotNull(zip.getEntry(page))
                     val decoded = decode(2400) { zip.getInputStream(entry) }
@@ -172,13 +209,32 @@ internal class ReaderPages(private val context: android.content.Context, private
                         checkedCover = true
                     }
                     decoded
-                }.also { cache.put(page, it) }
+                }
+                val decoded = if (comic.id.startsWith("zip:")) {
+                    val uri = Uri.parse(comic.id.removePrefix("zip:"))
+                    fun readLocal(): PageBitmap {
+                        val source = local ?: openLocalZip(context, uri).also { local = it }
+                        return readPage(source.zip)
+                    }
+                    try { readLocal() } catch (e: IOException) {
+                        local?.close()
+                        local = null
+                        job.ensureActive()
+                        readLocal()
+                    }
+                } else {
+                    val source = archive ?: remoteArchive(context, comic.id, reuse = true).also { archive = it }
+                    source.read(false, action = readPage)
+                }
+                cache.put(page, decoded)
+                decoded
             }
         }
     }
 
     suspend fun close() = lock.withLock {
         closed = true
+        local?.close()
         native?.close()
         archive?.close()
         cache.evictAll()
@@ -217,7 +273,7 @@ internal fun BookArt(comic: Comic, key: String, modifier: Modifier, scale: Conte
                     decode(size) { zip.getInputStream(entry) }
                 }
                 Result.success(if (comic.id.startsWith("dav:")) remoteArchive(context, comic.id).read(false, action = readPage)
-                else if (comic.id.startsWith("zip:")) resolver.withZip(Uri.parse(comic.id.removePrefix("zip:")), readPage)
+                else if (comic.id.startsWith("zip:")) openLocalZip(context, Uri.parse(comic.id.removePrefix("zip:"))).use { readPage(it.zip) }
                 else decode(size) { requireNotNull(resolver.openInputStream(Uri.parse(key))) })
             } catch (e: CancellationException) { throw e } catch (e: Exception) { Result.failure(e) }
         }

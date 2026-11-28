@@ -6,6 +6,8 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import kotlin.concurrent.thread
@@ -19,6 +21,30 @@ class ArchiveReadingTest {
         assertEquals(listOf("2.png", "10.png"), source.pages())
         for (width in listOf(2, 10, 2)) {
             assertEquals(width, source.image("$width.png", 320).bitmap.width)
+        }
+    }
+
+    @Test fun localZipSessionKeepsReadingOriginalHandle() = kotlinx.coroutines.runBlocking {
+        val file = File.createTempFile("comic-", ".zip", context.cacheDir)
+        val pages = listOf("1.png", "2.png")
+        val comic = Comic("zip:" + Uri.fromFile(file), "comic", pages, 0, 0)
+        val session = ReaderPages(context, comic)
+        try {
+            ZipOutputStream(file.outputStream()).use { zip ->
+                for ((index, page) in pages.withIndex()) {
+                    zip.putNextEntry(ZipEntry(page))
+                    val bitmap = android.graphics.Bitmap.createBitmap(index + 1, 1, android.graphics.Bitmap.Config.ARGB_8888)
+                    bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, zip)
+                    zip.closeEntry()
+                }
+            }
+            assertEquals(1, session.load(pages.first()).width)
+            java.nio.file.Files.delete(file.toPath())
+            assertEquals(2, session.load(pages.last()).width)
+        } finally {
+            session.close()
+            CoverCache.discard(context, comic)
+            file.delete()
         }
     }
 

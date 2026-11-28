@@ -183,7 +183,7 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
                         activity.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
                         val book = loadLocalBook(activity, uri, folder)
                         ensureLocalCover(activity, book.comic())
-                        shelf.add(book)
+                        if (book.id.startsWith("zip:")) shelf.reindex(book, book.comic().pages.lastIndex) else shelf.add(book)
                         val directory = when {
                             folder -> DocumentsContract.buildDocumentUri(uri.authority,
                                 DocumentsContract.getTreeDocumentId(uri))
@@ -242,7 +242,7 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
                         status = if (total > 0) activity.getString(R.string.cache_percent, bytes * 100 / total) else activity.getString(R.string.cache_kb, bytes / 1024)
                     }
                     job.ensureActive()
-                    shelf.indexRemote(book, org.json.JSONArray(book.pages).length() - 1)
+                    shelf.reindex(book, org.json.JSONArray(book.pages).length() - 1)
                 }
                 active = id
                 opening = null
@@ -258,11 +258,45 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
     val current = books.find { it.id == active }
     if (current != null) {
         key(current.id) {
-            LaunchedEffect(current.id) { withContext(Dispatchers.IO) { ensureLocalCover(activity, current) } }
-            Reader(activity, current, menuTheme, prefs, onPage = { index, fraction ->
-                // Queue progress writes in order, including a final page change just before leaving.
-                LibraryWrites.save(shelf, current.id, index, fraction)
-            }, onExit = { active = null })
+            val readable = if (current.id.startsWith("zip:")) {
+                var attempt by remember { mutableIntStateOf(0) }
+                val index = key(attempt) {
+                    produceState<Result<List<String>>?>(null, current.id) {
+                        value = try {
+                            Result.success(withContext(Dispatchers.IO) {
+                                val pages = localZipPages(activity, Uri.parse(current.id.removePrefix("zip:")))
+                                if (pages != current.pages) {
+                                    shelf.updateIndex(current.id, current.title, org.json.JSONArray(pages).toString(), pages.lastIndex)
+                                }
+                                pages
+                            })
+                        } catch (e: CancellationException) { throw e }
+                        catch (e: Exception) { Result.failure(e) }
+                    }.value
+                }
+                val pages = index?.getOrNull()
+                if (pages == null) {
+                    val error = index?.exceptionOrNull()
+                    AlertDialog(onDismissRequest = { active = null }, title = { Text(current.title) },
+                        text = { Text(when (error) {
+                            null -> activity.getString(R.string.reading_index)
+                            is LibraryError -> error.describe(activity)
+                            else -> error.localizedMessage ?: activity.getString(R.string.open_failed)
+                        }) },
+                        confirmButton = {
+                            if (error != null) TextButton(onClick = { attempt++ }) { Text(activity.getString(R.string.retry)) }
+                        },
+                        dismissButton = { TextButton(onClick = { active = null }) { Text(activity.getString(R.string.cancel)) } })
+                    null
+                } else current.copy(pages = pages, page = current.page.coerceIn(pages.indices))
+            } else current
+            if (readable != null) {
+                LaunchedEffect(readable.id) { withContext(Dispatchers.IO) { ensureLocalCover(activity, readable) } }
+                Reader(activity, readable, menuTheme, prefs, onPage = { index, fraction ->
+                    // Queue progress writes in order, including a final page change just before leaving.
+                    LibraryWrites.save(shelf, current.id, index, fraction)
+                }, onExit = { active = null })
+            }
         }
         return
     }
@@ -307,7 +341,7 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
                                             val source = if (item.nativeArchive) "dav-archive" else "dav"
                                             val id = "$source:${server.id}|${item.url}"
                                             val book = remoteBook(activity, id, item.name, indexProgress = {}, progress = { _, _ -> })
-                                            shelf.indexRemote(book, org.json.JSONArray(book.pages).length() - 1)
+                                            shelf.reindex(book, org.json.JSONArray(book.pages).length() - 1)
                                             false
                                         } catch (e: CancellationException) { throw e } catch (_: Exception) { true } finally { importDone++ }
                                     }
@@ -383,6 +417,7 @@ private fun removeFromLibrary(context: Context, shelf: LibraryDb.Shelf, comic: C
     if (comic.id.startsWith("dav:") || comic.id.startsWith("dav-archive:")) RemoteZip.discard(context.cacheDir, comic.id)
     if (comic.id.startsWith("folder:") || comic.id.startsWith("zip:") || comic.id.startsWith("archive:")) {
         val uri = android.net.Uri.parse(comic.id.substringAfter(':'))
+        if (comic.id.startsWith("zip:")) discardLegacyZip(context, uri)
         try {
             context.contentResolver.releasePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         } catch (_: SecurityException) { /* The grant may already have been revoked. */ }

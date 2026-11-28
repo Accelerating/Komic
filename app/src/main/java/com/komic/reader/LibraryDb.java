@@ -39,7 +39,7 @@ public abstract class LibraryDb extends RoomDatabase {
         void remove(String id);
         @Query("UPDATE books SET pages = :pages, title = :title, page = MIN(page, :lastPage) WHERE id = :id")
         void updateIndex(String id, String title, String pages, int lastPage);
-        @Transaction default void indexRemote(Book book, int lastPage) {
+        @Transaction default void reindex(Book book, int lastPage) {
             add(book);
             updateIndex(book.id, book.title, book.pages, lastPage);
         }

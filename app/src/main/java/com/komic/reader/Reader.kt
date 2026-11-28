@@ -55,7 +55,7 @@ import kotlinx.coroutines.launch
 @Composable
 fun Reader(activity: MainActivity, comic: Comic, theme: String, prefs: SharedPreferences, onPage: (Int, Float) -> Unit, onExit: () -> Unit) {
     val session = remember(comic.id) {
-        if (comic.id.substringBefore(':') in setOf("dav", "archive", "dav-archive")) ReaderPages(activity.applicationContext, comic) else null
+        if (comic.id.substringBefore(':') in setOf("zip", "dav", "archive", "dav-archive")) ReaderPages(activity.applicationContext, comic) else null
     }
     LaunchedEffect(session) {
         try { kotlinx.coroutines.awaitCancellation() }
