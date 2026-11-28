@@ -1,5 +1,8 @@
 package com.komic.reader
 
+import android.content.ActivityNotFoundException
+import android.content.ComponentName
+import android.content.pm.PackageManager
 import android.content.Context
 import android.provider.DocumentsContract
 import android.net.Uri
@@ -208,17 +211,33 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
         }
     }
     fun localImportLocation(): Uri = prefs.getString("localImportLocation", null)?.let(Uri::parse)
+        ?.takeIf { DocumentsContract.isDocumentUri(activity, it) }
         ?: DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:")
-    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri -> import(listOfNotNull(uri), true) }
-    val archivePicker = remember {
-        object : ActivityResultContracts.OpenMultipleDocuments() {
-            override fun createIntent(context: Context, input: Array<String>): Intent =
-                super.createIntent(context, input).apply {
-                    putExtra(DocumentsContract.EXTRA_INITIAL_URI, localImportLocation())
-                }
-        }
+    val archiveContract = remember { ActivityResultContracts.OpenMultipleDocuments() }
+    val folderContract = remember { ActivityResultContracts.OpenDocumentTree() }
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        import(archiveContract.parseResult(it.resultCode, it.data), false)
     }
-    val filePicker = rememberLauncherForActivityResult(archivePicker) { uris -> import(uris, false) }
+    val folderPicker = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        import(listOfNotNull(folderContract.parseResult(it.resultCode, it.data)), true)
+    }
+    fun launchPicker(folder: Boolean) {
+        val location = localImportLocation()
+        val intent = if (folder) folderContract.createIntent(activity, location)
+            else archiveContract.createIntent(activity, arrayOf("*/*")).putExtra(DocumentsContract.EXTRA_INITIAL_URI, location)
+        val candidates = activity.packageManager.queryIntentActivities(intent,
+            PackageManager.MATCH_SYSTEM_ONLY or PackageManager.MATCH_DEFAULT_ONLY)
+        val picker = candidates.firstOrNull { it.activityInfo.packageName in
+            setOf("com.android.documentsui", "com.google.android.documentsui") } ?: candidates.firstOrNull()
+        if (picker != null) {
+            intent.component = ComponentName(picker.activityInfo.packageName, picker.activityInfo.name)
+            try {
+                if (folder) folderPicker.launch(intent) else filePicker.launch(intent)
+                return
+            } catch (_: ActivityNotFoundException) { /* The system picker may have been disabled. */ }
+        }
+        scope.launch { notices.showSnackbar(activity.getString(R.string.system_picker_unavailable)) }
+    }
     var settingsVisit by rememberSaveable { mutableIntStateOf(0) }
     // Keep the directory when closing a comic, but only within this visit to Settings.
     val settingsState = if (tab == 2) key(settingsVisit) {
@@ -407,8 +426,8 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
     }
     if (importMenu) AlertDialog(onDismissRequest = { importMenu = false }, title = { Text(activity.getString(R.string.add_to_shelf), fontFamily = Editorial) },
         text = { Column {
-            TextButton(onClick = { importMenu = false; folderPicker.launch(localImportLocation()) }) { Text(activity.getString(R.string.choose_folder)) }
-            TextButton(onClick = { importMenu = false; filePicker.launch(arrayOf("*/*")) }) { Text(activity.getString(R.string.open_zip)) }
+            TextButton(onClick = { importMenu = false; launchPicker(true) }) { Text(activity.getString(R.string.choose_folder)) }
+            TextButton(onClick = { importMenu = false; launchPicker(false) }) { Text(activity.getString(R.string.open_zip)) }
         } }, confirmButton = { TextButton(onClick = { importMenu = false }) { Text(activity.getString(R.string.cancel)) } })
 }
 

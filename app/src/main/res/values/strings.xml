@@ -101,4 +101,5 @@
     <string name="checking_updates">Checking for updates…</string>
     <string name="up_to_date">You have the latest version</string>
     <string name="update_check_failed">Could not check for updates. Try again.</string>
+    <string name="system_picker_unavailable">The system file picker is unavailable.</string>
 </resources>
