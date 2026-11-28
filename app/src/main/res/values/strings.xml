@@ -102,4 +102,12 @@
     <string name="up_to_date">You have the latest version</string>
     <string name="update_check_failed">Could not check for updates. Try again.</string>
     <string name="system_picker_unavailable">The system file picker is unavailable.</string>
+    <string name="first_added">Earliest added first</string>
+    <string name="last_added">Latest added first</string>
+    <string name="title_asc">Title (ascending)</string>
+    <string name="title_desc">Title (descending)</string>
+    <string name="search_titles">Search by title</string>
+    <string name="clear_search">Clear search</string>
+    <string name="sort_shelf">Sort bookshelf</string>
+    <string name="no_title_matches">No matching titles</string>
 </resources>

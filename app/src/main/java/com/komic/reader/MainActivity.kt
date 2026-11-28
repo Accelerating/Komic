@@ -33,6 +33,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.rememberTextMeasurer
+import android.icu.text.BreakIterator
 import androidx.compose.ui.unit.*
 import androidx.core.view.WindowCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
@@ -112,6 +114,11 @@ class MainActivity : ComponentActivity() {
     }
 }
 
+private enum class ShelfSort(val label: Int) {
+    FIRST_ADDED(R.string.first_added), LAST_ADDED(R.string.last_added),
+    TITLE_ASC(R.string.title_asc), TITLE_DESC(R.string.title_desc)
+}
+
 @Composable
 private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: String, onTheme: (String) -> Unit) {
     var updateRequest by remember { mutableIntStateOf(0) }
@@ -121,6 +128,10 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var active by rememberSaveable { mutableStateOf<String?>(null) }
     var books by remember { mutableStateOf<List<Comic>>(emptyList()) }
+    var search by rememberSaveable { mutableStateOf("") }
+    var shelfSort by remember {
+        mutableStateOf(ShelfSort.entries.find { it.name == prefs.getString("shelfSort", null) } ?: ShelfSort.FIRST_ADDED)
+    }
     var importTotal by remember { mutableIntStateOf(0) }
     var importDone by remember { mutableIntStateOf(0) }
     var importTitle by remember { mutableStateOf("") }
@@ -323,11 +334,14 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
     val gridStates = listOf(rememberLazyGridState(), rememberLazyGridState())
     Box(Modifier.fillMaxSize().background(Paper).safeDrawingPadding()) {
         Column {
-            Row(Modifier.fillMaxWidth().height(66.dp).padding(start = 22.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+            val selectedTitle = selected.singleOrNull()?.let { id -> books.find { it.id == id }?.title }
+            Row(Modifier.fillMaxWidth().heightIn(min = 66.dp).padding(start = 22.dp, end = 10.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (selected.isNotEmpty()) IconButton(onClick = { selected = arrayListOf() }) {
                     Icon(Icons.Outlined.Close, activity.getString(R.string.end_selection), tint = Wine)
                 }
-                Text(if (selected.isEmpty()) tabs[tab] else activity.getString(R.string.selected_count, selected.size), Modifier.weight(1f), color = Wine, fontFamily = Editorial, fontWeight = FontWeight.Bold, fontSize = 29.sp)
+                Text(selectedTitle ?: if (selected.isEmpty()) tabs[tab] else activity.getString(R.string.selected_count, selected.size),
+                    Modifier.weight(1f).padding(vertical = 6.dp), color = Wine, fontFamily = Editorial,
+                    fontWeight = FontWeight.Bold, fontSize = if (selectedTitle != null) 18.sp else 29.sp)
                 if (selected.isNotEmpty()) IconButton(onClick = { confirming = true }) {
                     Icon(Icons.Outlined.Delete, activity.getString(R.string.delete_selected), tint = Wine)
                 } else if (tab != 2) IconButton(onClick = { importMenu = true }, enabled = !importing) {
@@ -335,6 +349,41 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
                 }
             }
             HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = Wine.copy(alpha = .65f))
+            if (tab == 0 && selected.isEmpty()) {
+                Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically) {
+                    OutlinedTextField(value = search, onValueChange = {
+                        search = it
+                        gridStates[0].requestScrollToItem(0)
+                    }, modifier = Modifier.weight(1f), singleLine = true,
+                        label = { Text(activity.getString(R.string.search_titles)) },
+                        leadingIcon = { Icon(Icons.Outlined.Search, null) },
+                        trailingIcon = {
+                            if (search.isNotEmpty()) IconButton(onClick = {
+                                search = ""
+                                gridStates[0].requestScrollToItem(0)
+                            }) { Icon(Icons.Outlined.Close, activity.getString(R.string.clear_search)) }
+                        })
+                    Box {
+                        var expanded by remember { mutableStateOf(false) }
+                        IconButton(onClick = { expanded = true }) {
+                            Icon(Icons.Outlined.Sort, activity.getString(R.string.sort_shelf), tint = Wine)
+                        }
+                        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                            ShelfSort.entries.forEach { order ->
+                                DropdownMenuItem(text = { Text(activity.getString(order.label)) },
+                                    trailingIcon = { if (order == shelfSort) Icon(Icons.Outlined.Check, null) },
+                                    onClick = {
+                                        shelfSort = order
+                                        prefs.edit().putString("shelfSort", order.name).apply()
+                                        expanded = false
+                                        gridStates[0].requestScrollToItem(0)
+                                    })
+                            }
+                        }
+                    }
+                }
+            }
             if (importing) Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
                 Text(activity.getString(R.string.import_progress, importDone, importTotal) + "  " + importTitle,
                     maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -371,7 +420,26 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
                         }, importing = importing)
                 }
                 else {
-                    val visible = if (tab == 0) books else books.filter { it.opened > 0 }.sortedByDescending { it.opened }
+                    val visible = remember(books, tab, search, shelfSort) {
+                        if (tab == 1) books.filter { it.opened > 0 }.sortedByDescending { it.opened }
+                        else {
+                            val query = search.trim()
+                            val matches = if (query.isEmpty()) books else books.filter { it.title.contains(query, ignoreCase = true) }
+                            // Shelf.observe() returns insertion order, including for existing libraries.
+                            when (shelfSort) {
+                                ShelfSort.FIRST_ADDED -> matches
+                                ShelfSort.LAST_ADDED -> matches.asReversed()
+                                ShelfSort.TITLE_ASC, ShelfSort.TITLE_DESC -> {
+                                    val collator = pageOrder
+                                    val order = Comparator<Comic> { a, b -> collator.compare(a.title, b.title) }
+                                    matches.sortedWith(if (shelfSort == ShelfSort.TITLE_ASC) order else order.reversed())
+                                }
+                            }
+                        }
+                    }
+                    if (tab == 0 && search.isNotBlank() && visible.isEmpty()) {
+                        Text(activity.getString(R.string.no_title_matches), Modifier.align(Alignment.Center))
+                    }
                     if (visible.isEmpty() && tab == 1) Column(Modifier.align(Alignment.Center), horizontalAlignment = Alignment.CenterHorizontally) {
                         Text(activity.getString(R.string.no_history), fontFamily = Editorial, fontSize = 20.sp)
                         TextButton(onClick = { tab = 0 }) { Text(activity.getString(R.string.choose_book)) }
@@ -394,8 +462,7 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
                                             .padding(6.dp).background(Paper).padding(2.dp))
                                     }
                                 }
-                                Text(comic.title, Modifier.padding(top = 5.dp, start = 3.dp), fontFamily = Editorial,
-                                    fontWeight = FontWeight.SemiBold, color = Ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                ShelfTitle(comic.title)
                                 if (tab == 1) {
                                     Text("${comic.page + 1} / ${comic.pages.size}", Modifier.padding(start = 3.dp), fontSize = 12.sp)
                                     LinearProgressIndicator(progress = { (comic.page + 1f) / comic.pages.size },
@@ -429,6 +496,39 @@ private fun Komic(activity: MainActivity, shelf: LibraryDb.Shelf, menuTheme: Str
             TextButton(onClick = { importMenu = false; launchPicker(true) }) { Text(activity.getString(R.string.choose_folder)) }
             TextButton(onClick = { importMenu = false; launchPicker(false) }) { Text(activity.getString(R.string.open_zip)) }
         } }, confirmButton = { TextButton(onClick = { importMenu = false }) { Text(activity.getString(R.string.cancel)) } })
+}
+
+@Composable
+private fun ShelfTitle(title: String) {
+    val style = LocalTextStyle.current.copy(fontFamily = Editorial, fontWeight = FontWeight.SemiBold)
+    val measurer = rememberTextMeasurer()
+    BoxWithConstraints(Modifier.fillMaxWidth().padding(top = 5.dp, start = 3.dp)) {
+        val width = constraints.maxWidth
+        val display = remember(title, width, style, measurer) {
+            fun fits(text: String) = !measurer.measure(text, style, maxLines = 3,
+                constraints = Constraints(maxWidth = width)).hasVisualOverflow
+            if (fits(title)) title else {
+                // Cut only between grapheme clusters, including for emoji and combining marks.
+                val breaks = BreakIterator.getCharacterInstance().apply { setText(title) }
+                val offsets = generateSequence(breaks.first()) { breaks.next().takeUnless { it == BreakIterator.DONE } }.toList()
+                var low = 0
+                var high = offsets.lastIndex - 1
+                var best = "…"
+                while (low <= high) {
+                    val count = (low + high) / 2
+                    val head = (count + 1) / 2
+                    val tail = count - head
+                    val candidate = title.take(offsets[head]) + "…" + title.substring(offsets[offsets.lastIndex - tail])
+                    if (fits(candidate)) {
+                        best = candidate
+                        low = count + 1
+                    } else high = count - 1
+                }
+                best
+            }
+        }
+        Text(display, style = style, color = Ink, maxLines = 3)
+    }
 }
 
 private fun removeFromLibrary(context: Context, shelf: LibraryDb.Shelf, comic: Comic) {

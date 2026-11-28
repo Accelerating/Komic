@@ -100,4 +100,12 @@
     <string name="up_to_date">当前已是最新版本</string>
     <string name="update_check_failed">检查更新失败，请重试</string>
     <string name="system_picker_unavailable">系统文件选择器不可用。</string>
+    <string name="first_added">最早添加优先</string>
+    <string name="last_added">最近添加优先</string>
+    <string name="title_asc">书名升序</string>
+    <string name="title_desc">书名降序</string>
+    <string name="search_titles">搜索书名</string>
+    <string name="clear_search">清除搜索</string>
+    <string name="sort_shelf">书架排序</string>
+    <string name="no_title_matches">没有找到匹配的漫画</string>
 </resources>
